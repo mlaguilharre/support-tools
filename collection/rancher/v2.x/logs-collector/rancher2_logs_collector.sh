@@ -183,9 +183,11 @@ rke2-setup() {
           RKE2_DATA_DIR="/var/lib/rancher/rke2"
       fi
   fi
-
-  export CRI_CONFIG_FILE="${RKE2_DATA_DIR}/agent/etc/crictl.yaml"
-
+# we skip this part if we run as non root, because non root user should have CRI_CONFIG_FILE already set for crictl work.
+  if [[ ! $NONROOT ]]
+    then
+      export CRI_CONFIG_FILE="${RKE2_DATA_DIR}/agent/etc/crictl.yaml"
+  fi
 }
 
 system-all() {
@@ -611,6 +613,92 @@ k3s-k8s() {
       fi
     done
   fi
+
+}
+
+#we treat non root user. They must have a .kube/config configured.
+rke2-k8s-nonroot() {
+  if [ -f ${HOME}/.kube/config ]; then
+
+    KUBECONFIG=${HOME}/.kube/config
+  else
+    techo "you need $HOME/.kube/config"
+  fi
+
+  if [ -f ${RKE2_DATA_DIR}/agent/kubelet.kubeconfig ]; then
+    RKE2_AGENT=true
+# KUBECONFIG Already defined as ${HOME}/.kube/config
+#    KUBECONFIG=${RKE2_DATA_DIR}/agent/kubelet.kubeconfig
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get --raw='/healthz' --request-timeout=5s > /dev/null 2>&1
+    if [ $? -ne 0 ]
+      then
+        API_SERVER_OFFLINE=true
+        techo "[!] Kube-apiserver is offline, collecting local pod logs only"
+    fi
+  fi
+
+#It is a worker
+  if [[ ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
+    techo "Collecting rke2 cluster logs"
+    mkdir -p $TMPDIR/${DISTRO}/kubectl
+#    KUBECONFIG=${RKE2_DATA_DIR}/agent/kubelet.kubeconfig " no need for non root user"
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get nodes -o wide > $TMPDIR/${DISTRO}/kubectl/nodes 2>&1
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG describe nodes > $TMPDIR/${DISTRO}/kubectl/nodesdescribe 2>&1
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG version > $TMPDIR/${DISTRO}/kubectl/version 2>&1
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get pods -o wide --all-namespaces > $TMPDIR/${DISTRO}/kubectl/pods 2>&1
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get svc -o wide --all-namespaces > $TMPDIR/${DISTRO}/kubectl/services 2>&1
+  fi
+
+#It is a Control Plane
+#  if [[ ! ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
+#We can't determine as non root if a node is only worker or worker and Control plane. Hence performing the following for all cases
+if [[ ! ${API_SERVER_OFFLINE} ]]; then
+#    KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml # No need for a non root.
+    ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG api-resources > $TMPDIR/${DISTRO}/kubectl/api-resources 2>&1
+    RKE2_OBJECTS=(clusterroles clusterrolebindings crds mutatingwebhookconfigurations namespaces nodes pv validatingwebhookconfigurations)
+    RKE2_OBJECTS_NAMESPACED=(apiservices configmaps cronjobs deployments daemonsets endpoints events helmcharts hpa ingress jobs leases networkpolicies pods pvc replicasets roles rolebindings statefulsets)
+    for OBJECT in "${RKE2_OBJECTS[@]}"; do
+      ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get ${OBJECT} -o wide > $TMPDIR/${DISTRO}/kubectl/${OBJECT} 2>&1
+    done
+    for OBJECT in "${RKE2_OBJECTS_NAMESPACED[@]}"; do
+      ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get ${OBJECT} --all-namespaces -o wide > $TMPDIR/${DISTRO}/kubectl/${OBJECT} 2>&1
+    done
+  fi
+
+  if [[ ! ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
+    techo "Collecting rke2 system pod logs"
+    mkdir -p $TMPDIR/${DISTRO}/podlogs
+    KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml
+    for SYSTEM_NAMESPACE in "${SYSTEM_NAMESPACES[@]}"; do
+      for SYSTEM_POD in $(${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG -n $SYSTEM_NAMESPACE get pods --no-headers -o custom-columns=NAME:.metadata.name); do
+        ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG -n $SYSTEM_NAMESPACE logs --all-containers $SYSTEM_POD > $TMPDIR/${DISTRO}/podlogs/$SYSTEM_NAMESPACE-$SYSTEM_POD 2>&1
+        ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG -n $SYSTEM_NAMESPACE logs -p --all-containers $SYSTEM_POD > $TMPDIR/${DISTRO}/podlogs/$SYSTEM_NAMESPACE-$SYSTEM_POD-previous 2>&1
+      done
+    done
+  elif [[ ${RKE2_AGENT} || ${API_SERVER_OFFLINE} ]]; then
+    mkdir -p $TMPDIR/${DISTRO}/podlogs
+    for SYSTEM_NAMESPACE in "${SYSTEM_NAMESPACES[@]}"; do
+      if ls -d /var/log/pods/$SYSTEM_NAMESPACE* > /dev/null 2>&1; then
+        cp -r -p /var/log/pods/$SYSTEM_NAMESPACE* $TMPDIR/${DISTRO}/podlogs/
+      fi
+    done
+  fi
+
+  if $(ls -A1q ${RKE2_DATA_DIR}/agent/pod-manifests | grep -q .); then
+      techo "Collecting rke2 static pod manifests"
+      mkdir -p $TMPDIR/${DISTRO}/pod-manifests
+      cp -p ${RKE2_DATA_DIR}/agent/pod-manifests/* $TMPDIR/${DISTRO}/pod-manifests
+    else
+      techo "[!] Static pod manifest directory is empty, skipping"
+  fi
+
+  techo "Collecting rke2 agent/server logs"
+  for RKE2_LOG_DIR in agent server
+    do
+      if [ -d ${RKE2_DATA_DIR}/${RKE2_LOG_DIR}/logs/ ]; then
+        cp -rp ${RKE2_DATA_DIR}/${RKE2_LOG_DIR}/logs/ $TMPDIR/${DISTRO}/${RKE2_LOG_DIR}-logs
+      fi
+  done
 
 }
 
@@ -1071,7 +1159,8 @@ archive() {
   tar --create --gzip --file ${DIR_NAME}/${LOGNAME}.tar.gz --directory ${TMPDIR_BASE}/ .
   if [ $? -eq -0 ]
     then
-      techo "Created ${DIR_NAME}/${LOGNAME}.tar.gz"
+
+    techo "Created ${DIR_NAME}/${LOGNAME}.tar.gz"
     else
       techo "Creating the tar archive did not complete successfully"
   fi
@@ -1257,7 +1346,9 @@ help() {
   -r    Override k8s distribution if not automatically detected (rke|k3s|rke2|kubeadm)
   -p    When supplied runs with the default nice/ionice priorities, otherwise use the lowest priorities
   -f    Force log collection if the minimum space isn't available
-  -o    Obfuscate IP addresses"
+  -o    Obfuscate IP addresses
+  -N    Run as Non root user. Some root only information will be missing like journalctl or messages logs.
+        You need that ${HOME}/.kube/config file exist for kubectl, and that crictl can run as non root user. "
 
 }
 
@@ -1274,14 +1365,9 @@ techo() {
 }
 
 # Check if we're running as root.
-if [[ $EUID -ne 0 ]] && [[ "${DEV}" == "" ]]
-  then
-    help
-    techo "This script must be run as root"
-    exit 1
-fi
+# Marc is testing non root user
 
-while getopts "c:d:s:e:S:E:r:fpoh" opt; do
+while getopts "c:d:s:e:S:E:r:fpohN" opt; do
   case $opt in
     c)
       FLAG_DATA_DIR="${OPTARG}"
@@ -1321,6 +1407,9 @@ while getopts "c:d:s:e:S:E:r:fpoh" opt; do
     o)
       OBFUSCATE=true
       ;;
+    N)
+     NONROOT=true
+      ;;
     h)
       help && exit 0
       ;;
@@ -1333,6 +1422,16 @@ while getopts "c:d:s:e:S:E:r:fpoh" opt; do
   esac
 done
 
+
+if  [[ ! $NONROOT ]]
+ then
+  if [[ $EUID -ne 0 ]] && [[ "${DEV}" == "" ]] 
+    then
+      help
+      techo "This script must be run as root, or use option -N"
+      exit 1
+  fi
+fi
 if [ -n "${START_DAY}" ] && [ -n "${END_DAY}" ] && [ ${END_DAY} -ge ${START_DAY} ]
   then
     techo "Start day should be greater than end day"
@@ -1381,6 +1480,10 @@ elif [ "${DISTRO}" = "k3s" ]
 elif [ "${DISTRO}" = "rke2" ]
   then
     rke2-logs
+    if [[ $NONROOT ]]
+      then
+        rke2-k8s-nonroot
+    fi
     rke2-k8s
     rke2-certs
     rke2-etcd
@@ -1408,3 +1511,4 @@ fi
 archive
 cleanup
 echo "$(timestamp): Finished"
+
