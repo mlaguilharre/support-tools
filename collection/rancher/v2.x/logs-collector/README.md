@@ -17,7 +17,7 @@ Output will be written to `/tmp` as a tar.gz archive named `<hostname>-<date>.ta
 
 ## Usage
 
-The script needs to be downloaded and run directly on the node, using the `root` user or `sudo`.
+The script needs to be downloaded and run directly on the node, using the `root` user or `sudo`, unless you use -N option that allow to gather minimal information on RKE2_K8S, ETCD, CRD and OS.
 
 ### Download and run the script
 * Save the script as: `rancher2_logs_collector.sh`
@@ -56,4 +56,6 @@ Rancher 2.x logs-collector
   -r    Override k8s distribution if not automatically detected (rke|k3s|rke2|kubeadm)
   -p    When supplied runs with the default nice/ionice priorities, otherwise use the lowest priorities
   -f    Force log collection if the minimum space isn't available
+  -N    Run as Non root user. Some root only information will be missing like journalctl or messages logs.
+        You need that ${HOME}/.kube/config file exist for kubectl, and that crictl can run as non root user.
 ```
