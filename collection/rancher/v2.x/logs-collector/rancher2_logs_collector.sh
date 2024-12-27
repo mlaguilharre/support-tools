@@ -1103,7 +1103,10 @@ rke2-etcd-nonroot() {
             kubectl -n kube-system exec $etcdpod -- etcdctl --cert ${ETCD_CERT} --key ${ETCD_KEY} --cacert ${ETCD_CACERT} alarm list >> $TMPDIR/etcd/alarmlist 2>&1
           done
 
-        techo "If you need rke2 etcd metrics you need root access. Refer to https://gist.github.com/superseb/3b78f47989e0dbc1295486c186e944bf#etcd"
+        techo "Collecting k3s etcd metrics"
+        #We assume that "listen-metrics-urls: http://127.0.0.1:2381"
+        ETCD_ENDPOINTS="http://127.0.0.1:2381"
+        curl $ETCD_ENDPOINTS/metrics > $TMPDIR/etcd/etcd-metrics-$ETCD_ENDPOINT.txt
 
       fi
     else
