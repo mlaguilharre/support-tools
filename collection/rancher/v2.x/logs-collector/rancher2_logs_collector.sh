@@ -373,7 +373,12 @@ provisioning-crds() {
       CONTROL_PLANE=1
   elif [[ "${DISTRO}" = "rke2" && -f /etc/rancher/${DISTRO}/rke2.yaml ]]
     then
-      KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml
+      if [[ ! ${NONROOT} ]]
+        then
+          KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml
+        else
+          KUBECONFIG=${HOME}/.kube/config
+      fi
       ctlcmd="${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=${KUBECONFIG}"
       CONTROL_PLANE=1
   fi
@@ -628,6 +633,7 @@ rke2-k8s-nonroot() {
   if [ -f ${RKE2_DATA_DIR}/agent/kubelet.kubeconfig ]; then
     RKE2_AGENT=true
 # KUBECONFIG Already defined as ${HOME}/.kube/config
+#    non root user doesn't have access to the path below.
 #    KUBECONFIG=${RKE2_DATA_DIR}/agent/kubelet.kubeconfig
     ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get --raw='/healthz' --request-timeout=5s > /dev/null 2>&1
     if [ $? -ne 0 ]
@@ -641,7 +647,7 @@ rke2-k8s-nonroot() {
   if [[ ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
     techo "Collecting rke2 cluster logs"
     mkdir -p $TMPDIR/${DISTRO}/kubectl
-#    KUBECONFIG=${RKE2_DATA_DIR}/agent/kubelet.kubeconfig " no need for non root user"
+#    KUBECONFIG=${RKE2_DATA_DIR}/agent/kubelet.kubeconfig " Non root user can't access this path as default"
     ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG get nodes -o wide > $TMPDIR/${DISTRO}/kubectl/nodes 2>&1
     ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG describe nodes > $TMPDIR/${DISTRO}/kubectl/nodesdescribe 2>&1
     ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG version > $TMPDIR/${DISTRO}/kubectl/version 2>&1
@@ -653,7 +659,7 @@ rke2-k8s-nonroot() {
 #  if [[ ! ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
 #We can't determine as non root if a node is only worker or worker and Control plane. Hence performing the following for all cases
 if [[ ! ${API_SERVER_OFFLINE} ]]; then
-#    KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml # No need for a non root.
+#    KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml # Non root user rely on $HOME/.kube/config file.
     ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG api-resources > $TMPDIR/${DISTRO}/kubectl/api-resources 2>&1
     RKE2_OBJECTS=(clusterroles clusterrolebindings crds mutatingwebhookconfigurations namespaces nodes pv validatingwebhookconfigurations)
     RKE2_OBJECTS_NAMESPACED=(apiservices configmaps cronjobs deployments daemonsets endpoints events helmcharts hpa ingress jobs leases networkpolicies pods pvc replicasets roles rolebindings statefulsets)
@@ -665,40 +671,46 @@ if [[ ! ${API_SERVER_OFFLINE} ]]; then
     done
   fi
 
-  if [[ ! ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
+
+#  if [[ ! ${RKE2_AGENT} && ! ${API_SERVER_OFFLINE} ]]; then
+#We can't determine as non root if a node is only worker or worker and Control plane. Hence performing the following for all cases
+  if [[ ! ${API_SERVER_OFFLINE} ]]; then
     techo "Collecting rke2 system pod logs"
     mkdir -p $TMPDIR/${DISTRO}/podlogs
-    KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml
+
+#    KUBECONFIG=/etc/rancher/${DISTRO}/rke2.yaml .KUBECONFIG Already defined as ${HOME}/.kube/config
     for SYSTEM_NAMESPACE in "${SYSTEM_NAMESPACES[@]}"; do
       for SYSTEM_POD in $(${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG -n $SYSTEM_NAMESPACE get pods --no-headers -o custom-columns=NAME:.metadata.name); do
         ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG -n $SYSTEM_NAMESPACE logs --all-containers $SYSTEM_POD > $TMPDIR/${DISTRO}/podlogs/$SYSTEM_NAMESPACE-$SYSTEM_POD 2>&1
         ${RKE2_DATA_DIR}/bin/kubectl --kubeconfig=$KUBECONFIG -n $SYSTEM_NAMESPACE logs -p --all-containers $SYSTEM_POD > $TMPDIR/${DISTRO}/podlogs/$SYSTEM_NAMESPACE-$SYSTEM_POD-previous 2>&1
       done
     done
-  elif [[ ${RKE2_AGENT} || ${API_SERVER_OFFLINE} ]]; then
-    mkdir -p $TMPDIR/${DISTRO}/podlogs
-    for SYSTEM_NAMESPACE in "${SYSTEM_NAMESPACES[@]}"; do
-      if ls -d /var/log/pods/$SYSTEM_NAMESPACE* > /dev/null 2>&1; then
-        cp -r -p /var/log/pods/$SYSTEM_NAMESPACE* $TMPDIR/${DISTRO}/podlogs/
-      fi
-    done
+  #We can't determine as non root if a node is only worker or worker and Control plane. Anyhow as non root user the following will fail,
+  #Because we don't have by default access to /var/log.
+#  elif [[ ${RKE2_AGENT} || ${API_SERVER_OFFLINE} ]]; then
+#    mkdir -p $TMPDIR/${DISTRO}/podlogs
+#    for SYSTEM_NAMESPACE in "${SYSTEM_NAMESPACES[@]}"; do
+#      if ls -d /var/log/pods/$SYSTEM_NAMESPACE* > /dev/null 2>&1; then
+#        cp -r -p /var/log/pods/$SYSTEM_NAMESPACE* $TMPDIR/${DISTRO}/podlogs/
+#      fi
+#    done
   fi
 
-  if $(ls -A1q ${RKE2_DATA_DIR}/agent/pod-manifests | grep -q .); then
-      techo "Collecting rke2 static pod manifests"
-      mkdir -p $TMPDIR/${DISTRO}/pod-manifests
-      cp -p ${RKE2_DATA_DIR}/agent/pod-manifests/* $TMPDIR/${DISTRO}/pod-manifests
-    else
-      techo "[!] Static pod manifest directory is empty, skipping"
-  fi
+#  if $(ls -A1q ${RKE2_DATA_DIR}/agent/pod-manifests | grep -q .); then
+#      techo "Collecting rke2 static pod manifests"
+#      mkdir -p $TMPDIR/${DISTRO}/pod-manifests
+#      cp -p ${RKE2_DATA_DIR}/agent/pod-manifests/* $TMPDIR/${DISTRO}/pod-manifests
+#    else
+#      techo "[!] Static pod manifest directory is empty, skipping"
+#  fi
 
-  techo "Collecting rke2 agent/server logs"
-  for RKE2_LOG_DIR in agent server
-    do
-      if [ -d ${RKE2_DATA_DIR}/${RKE2_LOG_DIR}/logs/ ]; then
-        cp -rp ${RKE2_DATA_DIR}/${RKE2_LOG_DIR}/logs/ $TMPDIR/${DISTRO}/${RKE2_LOG_DIR}-logs
-      fi
-  done
+#  techo "Collecting rke2 agent/server logs"
+#  for RKE2_LOG_DIR in agent server
+#    do
+#      if [ -d ${RKE2_DATA_DIR}/${RKE2_LOG_DIR}/logs/ ]; then
+#        cp -rp ${RKE2_DATA_DIR}/${RKE2_LOG_DIR}/logs/ $TMPDIR/${DISTRO}/${RKE2_LOG_DIR}-logs
+#      fi
+#  done
 
 }
 
@@ -1053,6 +1065,57 @@ rke-etcd() {
       do
         curl -sL --connect-timeout 5 --cacert /etc/kubernetes/ssl/kube-ca.pem --key $KEY --cert $CERT https://$ENDPOINT/metrics > $TMPDIR/etcd/etcd-metrics-$ENDPOINT.txt
     done
+  fi
+
+}
+
+#Collect etcd state as non root user. root user rely on containerd to gather etcd data.
+#Non root user by default don't have access to containerd, then rely on kubectl.
+#Thanks to https://gist.github.com/superseb/3b78f47989e0dbc1295486c186e944bf#etcd
+rke2-etcd-nonroot() {
+
+  if [ ! ${API_SERVER_OFFLINE} ]
+    then
+      RKE2_ETCD_NONROOT=$(kubectl get po -n kube-system -l component=etcd| awk '/etcd/{print($3)}')
+      if [[ ${RKE2_ETCD_NONROOT} -eq "Running" ]]; then
+        techo "Collecting rke2 etcd info"
+        mkdir -p $TMPDIR/etcd
+        ETCD_CERT=${RKE2_DATA_DIR}/server/tls/etcd/server-client.crt
+        ETCD_KEY=${RKE2_DATA_DIR}/server/tls/etcd/server-client.key
+        ETCD_CACERT=${RKE2_DATA_DIR}/server/tls/etcd/server-ca.crt
+        for etcdpod in $(kubectl -n kube-system get pod -l component=etcd --no-headers -o custom-columns=NAME:.metadata.name)
+          do
+            kubectl -n kube-system exec $etcdpod -- etcdctl --cert ${ETCD_CERT} --key ${ETCD_KEY} --cacert ${ETCD_CACERT} member list  >> $TMPDIR/etcd/memberlist 2>&1
+          done
+
+        for etcdpod in $(kubectl -n kube-system get pod -l component=etcd --no-headers -o custom-columns=NAME:.metadata.name)
+          do
+            kubectl -n kube-system exec $etcdpod -- etcdctl --cert ${ETCD_CERT} --key ${ETCD_KEY} --cacert ${ETCD_CACERT} --write-out table endpoint status >> $TMPDIR/etcd/endpointstatus 2>&1
+          done
+
+        for etcdpod in $(kubectl -n kube-system get pod -l component=etcd --no-headers -o custom-columns=NAME:.metadata.name)
+          do
+            kubectl -n kube-system exec $etcdpod -- etcdctl --cert ${ETCD_CERT} --key ${ETCD_KEY} --cacert ${ETCD_CACERT} endpoint health > $TMPDIR/etcd/endpointhealth 2>&1
+          done
+
+        for etcdpod in $(kubectl -n kube-system get pod -l component=etcd --no-headers -o custom-columns=NAME:.metadata.name)
+          do
+            kubectl -n kube-system exec $etcdpod -- etcdctl --cert ${ETCD_CERT} --key ${ETCD_KEY} --cacert ${ETCD_CACERT} alarm list >> $TMPDIR/etcd/alarmlist 2>&1
+          done
+
+        techo "If you need rke2 etcd metrics you need root access. Refer to https://gist.github.com/superseb/3b78f47989e0dbc1295486c186e944bf#etcd"
+
+      fi
+    else
+      techo "[!] Etcd is not running, skipping etcd collection"
+  fi
+
+  if [ -d "${RKE2_DATA_DIR}/server/db/etcd" ]; then
+    mkdir -p $TMPDIR/etcd
+    find "${RKE2_DATA_DIR}/server/db/etcd" -type f -exec ls -la {} \; > $TMPDIR/etcd/findserverdbetcd 2>&1
+  fi
+  if [ -d "${RKE2_DATA_DIR}/server/db/snapshots" ]; then
+    find "${RKE2_DATA_DIR}/server/db/snapshots" -type f -exec ls -la {} \; > $TMPDIR/etcd/findserverdbsnapshots 2>&1
   fi
 
 }
@@ -1423,7 +1486,7 @@ while getopts "c:d:s:e:S:E:r:fpohN" opt; do
 done
 
 
-if  [[ ! $NONROOT ]]
+if  [[ ! ${NONROOT} ]]
  then
   if [[ $EUID -ne 0 ]] && [[ "${DEV}" == "" ]] 
     then
@@ -1480,13 +1543,16 @@ elif [ "${DISTRO}" = "k3s" ]
 elif [ "${DISTRO}" = "rke2" ]
   then
     rke2-logs
-    if [[ $NONROOT ]]
+    if [[ ${NONROOT} ]]
       then
         rke2-k8s-nonroot
+        rke2-etcd-nonroot
+      else
+        rke2-k8s
+        rke2-certs
+        rke2-etcd
     fi
-    rke2-k8s
-    rke2-certs
-    rke2-etcd
+
 elif [ "${DISTRO}" = "kubeadm" ]
   then
     kubeadm-k8s
